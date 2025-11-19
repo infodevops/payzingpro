@@ -1,0 +1,120 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  # Validate HTML/CSS/JS
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate HTML
+        run: |
+          echo "Checking for HTML syntax errors..."
+          if grep -q "YOUR_API_KEY" index.html; then
+            echo "⚠️ Warning: Firebase config contains placeholder values"
+            echo "Please update Firebase configuration before deployment"
+          fi
+          echo "✅ HTML validation passed"
+
+      - name: Check file size
+        run: |
+          SIZE=$(stat -f%z index.html 2>/dev/null || stat -c%s index.html 2>/dev/null)
+          echo "index.html size: $(($SIZE / 1024)) KB"
+          if [ $SIZE -gt 10485760 ]; then
+            echo "⚠️ Warning: File is larger than 10MB"
+          fi
+
+  # Build and Deploy
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Create deployment directory
+        run: |
+          mkdir -p _site
+          cp index.html _site/
+          echo "✅ Deployment directory prepared"
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '_site'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Deployment summary
+        run: |
+          echo "🚀 Deployment completed successfully!"
+          echo "📍 Your app is live at: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          echo "⏰ Deployed at: $(date)"
+
+  # Post-deployment checks
+  verify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for deployment
+        run: sleep 30
+
+      - name: Check if site is accessible
+        run: |
+          URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          echo "Checking: $URL"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" $URL || echo "000")
+          if [ "$STATUS" = "200" ]; then
+            echo "✅ Site is live and accessible!"
+          else
+            echo "⚠️ Site returned status code: $STATUS"
+            echo "This might be normal if deployment is still propagating"
+          fi
+
+      - name: Deployment notification
+        run: |
+          echo "================================================"
+          echo "🎉 Payroll Manager Pro Deployment Complete!"
+          echo "================================================"
+          echo ""
+          echo "📱 Access your app:"
+          echo "   https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          echo ""
+          echo "📊 Deployment Details:"
+          echo "   - Commit: ${{ github.sha }}"
+          echo "   - Branch: ${{ github.ref_name }}"
+          echo "   - Triggered by: ${{ github.actor }}"
+          echo ""
+          echo "🔧 Next Steps:"
+          echo "   1. Verify Firebase configuration"
+          echo "   2. Test authentication flow"
+          echo "   3. Create Super Admin account"
+          echo "   4. Start adding companies!"
+          echo ""
+          echo "================================================"

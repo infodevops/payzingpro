@@ -1,0 +1,303 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ========================================
+    // HELPER FUNCTIONS
+    // ========================================
+    
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Get user document
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    // Check if user is Super Admin
+    function isSuperAdmin() {
+      return isAuthenticated() && getUserData().role == 'Super Admin';
+    }
+    
+    // Check if user is Company Admin for specific company
+    function isCompanyAdmin(companyId) {
+      return isAuthenticated() 
+        && getUserData().role == 'Company Admin'
+        && getUserData().companyId == companyId;
+    }
+    
+    // Check if user is HR Manager for specific company
+    function isHR(companyId) {
+      return isAuthenticated() 
+        && getUserData().role == 'HR Manager'
+        && getUserData().companyId == companyId;
+    }
+    
+    // Check if user is employee with specific ID
+    function isEmployee(employeeId) {
+      return isAuthenticated() && request.auth.uid == employeeId;
+    }
+    
+    // Check if user belongs to specific company (any role)
+    function belongsToCompany(companyId) {
+      return isAuthenticated() 
+        && (isSuperAdmin() 
+          || getUserData().companyId == companyId);
+    }
+    
+    // Check if user can manage company data
+    function canManageCompany(companyId) {
+      return isSuperAdmin() 
+        || isCompanyAdmin(companyId);
+    }
+    
+    // Check if user can manage employees
+    function canManageEmployees(companyId) {
+      return isSuperAdmin() 
+        || isCompanyAdmin(companyId) 
+        || isHR(companyId);
+    }
+    
+    // Check if user can view company data
+    function canViewCompany(companyId) {
+      return isSuperAdmin() 
+        || isCompanyAdmin(companyId) 
+        || isHR(companyId);
+    }
+    
+    // Prevent role escalation
+    function noRoleChange() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role'])
+        || isSuperAdmin();
+    }
+    
+    // Prevent company ID change (except by Super Admin)
+    function noCompanyIdChange() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['companyId'])
+        || isSuperAdmin();
+    }
+    
+    // ========================================
+    // USERS COLLECTION
+    // ========================================
+    
+    match /users/{userId} {
+      // Read: User can read own data, Super Admin can read all
+      allow read: if isAuthenticated() && (
+        request.auth.uid == userId 
+        || isSuperAdmin()
+      );
+      
+      // Create: Only during signup (Firebase Auth handles this)
+      // Or by Super Admin / Company Admin creating HR users
+      allow create: if isAuthenticated() && (
+        request.auth.uid == userId  // Self-registration
+        || isSuperAdmin()           // Super Admin creating users
+        || (isCompanyAdmin(request.resource.data.companyId) 
+          && request.resource.data.role == 'HR Manager')  // Company Admin creating HR
+      );
+      
+      // Update: User can update own data (except role and companyId)
+      // Super Admin can update anything
+      // Company Admin can update HR in their company
+      allow update: if isAuthenticated() && (
+        (request.auth.uid == userId 
+          && noRoleChange() 
+          && noCompanyIdChange())
+        || isSuperAdmin()
+        || (isCompanyAdmin(resource.data.companyId) 
+          && resource.data.role == 'HR Manager')
+      );
+      
+      // Delete: Only Super Admin
+      allow delete: if isSuperAdmin();
+    }
+    
+    // ========================================
+    // COMPANIES COLLECTION
+    // ========================================
+    
+    match /companies/{companyId} {
+      // Read: Super Admin, Company Admin, HR of that company
+      allow read: if canViewCompany(companyId);
+      
+      // Create: Only Super Admin
+      allow create: if isSuperAdmin();
+      
+      // Update: Super Admin or Company Admin of that company
+      allow update: if canManageCompany(companyId);
+      
+      // Delete: Only Super Admin
+      allow delete: if isSuperAdmin();
+    }
+    
+    // ========================================
+    // EMPLOYEES COLLECTION
+    // ========================================
+    
+    match /employees/{employeeId} {
+      // Read: 
+      // - Super Admin (all employees)
+      // - Company Admin (employees in their company)
+      // - HR Manager (employees in their company)
+      // - Employee (own record only)
+      allow read: if isAuthenticated() && (
+        isSuperAdmin()
+        || isCompanyAdmin(resource.data.companyId)
+        || isHR(resource.data.companyId)
+        || isEmployee(employeeId)
+      );
+      
+      // Create: Super Admin, Company Admin, or HR of that company
+      allow create: if canManageEmployees(request.resource.data.companyId);
+      
+      // Update: Super Admin, Company Admin, or HR of that company
+      // Employee can update limited fields (phone, address)
+      allow update: if canManageEmployees(request.resource.data.companyId)
+        || (isEmployee(employeeId) 
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['phoneNumber', 'address', 'emergencyContact']));
+      
+      // Delete: Super Admin or Company Admin only (not HR)
+      allow delete: if isSuperAdmin() 
+        || isCompanyAdmin(resource.data.companyId);
+    }
+    
+    // ========================================
+    // PAYSLIPS COLLECTION
+    // ========================================
+    
+    match /payslips/{payslipId} {
+      // Read:
+      // - Super Admin (all payslips)
+      // - Company Admin (payslips in their company)
+      // - HR Manager (payslips in their company)
+      // - Employee (own payslips only)
+      allow read: if isAuthenticated() && (
+        isSuperAdmin()
+        || isCompanyAdmin(resource.data.companyId)
+        || isHR(resource.data.companyId)
+        || isEmployee(resource.data.employeeId)
+      );
+      
+      // Create: Super Admin, Company Admin, or HR of that company
+      allow create: if canManageEmployees(request.resource.data.companyId);
+      
+      // Update: Super Admin, Company Admin, or HR of that company
+      // Payslips should rarely be updated (audit trail)
+      allow update: if canManageEmployees(request.resource.data.companyId);
+      
+      // Delete: Only Super Admin (payslips are legal records)
+      allow delete: if isSuperAdmin();
+    }
+    
+    // ========================================
+    // DEPARTMENTS COLLECTION (if implemented)
+    // ========================================
+    
+    match /departments/{departmentId} {
+      allow read: if isAuthenticated() && canViewCompany(resource.data.companyId);
+      allow write: if canManageCompany(request.resource.data.companyId);
+    }
+    
+    // ========================================
+    // DESIGNATIONS COLLECTION (if implemented)
+    // ========================================
+    
+    match /designations/{designationId} {
+      allow read: if isAuthenticated() && canViewCompany(resource.data.companyId);
+      allow write: if canManageCompany(request.resource.data.companyId);
+    }
+    
+    // ========================================
+    // AUDIT LOGS COLLECTION (if implemented)
+    // ========================================
+    
+    match /auditLogs/{logId} {
+      // Read: Super Admin and Company Admin can view logs
+      allow read: if isAuthenticated() && (
+        isSuperAdmin()
+        || isCompanyAdmin(resource.data.companyId)
+      );
+      
+      // Create: Any authenticated user (system creates logs)
+      allow create: if isAuthenticated();
+      
+      // No updates or deletes (immutable audit trail)
+      allow update: if false;
+      allow delete: if false;
+    }
+    
+    // ========================================
+    // SETTINGS COLLECTION (if implemented)
+    // ========================================
+    
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+    
+    // ========================================
+    // DEFAULT DENY ALL
+    // ========================================
+    
+    // Any collection not explicitly defined above is denied
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
+// ========================================
+// TESTING THESE RULES
+// ========================================
+// 
+// In Firebase Console → Firestore → Rules tab → Rules Playground:
+//
+// Test 1: Super Admin can read any company
+// - Auth: [Super Admin UID]
+// - Location: /companies/companyId123
+// - Operation: get
+// - Expected: Allow
+//
+// Test 2: Company Admin can only read their company
+// - Auth: [Company Admin UID with companyId: company123]
+// - Location: /companies/company123
+// - Operation: get
+// - Expected: Allow
+//
+// Test 3: Company Admin cannot read other companies
+// - Auth: [Company Admin UID with companyId: company123]
+// - Location: /companies/company456
+// - Operation: get
+// - Expected: Deny
+//
+// Test 4: Employee can read own payslips
+// - Auth: [Employee UID]
+// - Location: /payslips/payslip123 (with employeeId: [Employee UID])
+// - Operation: get
+// - Expected: Allow
+//
+// Test 5: Employee cannot read others' payslips
+// - Auth: [Employee UID]
+// - Location: /payslips/payslip456 (with employeeId: differentUID)
+// - Operation: get
+// - Expected: Deny
+//
+// Test 6: HR can create employees in their company
+// - Auth: [HR UID with companyId: company123]
+// - Location: /employees/newEmpId
+// - Data: { companyId: "company123", ... }
+// - Operation: create
+// - Expected: Allow
+//
+// Test 7: HR cannot create employees in other companies
+// - Auth: [HR UID with companyId: company123]
+// - Location: /employees/newEmpId
+// - Data: { companyId: "company456", ... }
+// - Operation: create
+// - Expected: Deny
+//
+// ========================================
